@@ -58,7 +58,9 @@ public final class CompatPlan {
         /** Выставить CullTask.disableEntityCulling=true у мода EntityCulling (штатный флаг мода). */
         DISABLE_ENTITYCULLING_MOD,
         /** Не троттлить мобов, которых уже пометил ServerCore (проверка в рантайме). */
-        DEFER_TO_SERVERCORE
+        DEFER_TO_SERVERCORE,
+        /** Не отсекать сущности в shadow pass Iris (иначе у мобов пропадают тени). */
+        RESPECT_IRIS_SHADOW_PASS
     }
 
     /** Решение по одной подсистеме. */
@@ -87,6 +89,11 @@ public final class CompatPlan {
         /** Фактически включён ли activation range у ServerCore. */
         public boolean serverCoreActivationRange = true;
 
+        /** Политика culling при шейдерах Iris: OFF | SHADOW_SAFE | FORCE. */
+        public String irisCulling = "SHADOW_SAFE";
+        /** Включён ли шейдерпак прямо сейчас (на этапе миксинов всегда false). */
+        public boolean irisShadersInUse;
+
         public Input mod(String id) {
             mods.add(id);
             return this;
@@ -94,6 +101,33 @@ public final class CompatPlan {
 
         public boolean has(String id) {
             return mods.contains(id);
+        }
+
+        /** Кто-то дорисовывает мир за ванильной дальностью (Distant Horizons, Bobby). */
+        public boolean hasLodTerrain() {
+            return has("distanthorizons") || has("bobby");
+        }
+
+        /** Кто-то заменил графический бэкенд или переписал рендер сущностей. */
+        public boolean hasRenderBackendConflict() {
+            return has("vulkanmod") || has("optifabric");
+        }
+
+        public IrisCulling shaderCulling() {
+            return IrisCulling.parse(irisCulling, IrisCulling.SHADOW_SAFE);
+        }
+    }
+
+    /** Дублирует {@link IrisCompat.ShaderCulling}, чтобы планировщик остался без рефлексии. */
+    public enum IrisCulling {
+        OFF, SHADOW_SAFE, FORCE;
+
+        public static IrisCulling parse(String value, IrisCulling fallback) {
+            if (value == null) return fallback;
+            for (IrisCulling mode : values()) {
+                if (mode.name().equalsIgnoreCase(value.trim())) return mode;
+            }
+            return fallback;
         }
     }
 
@@ -132,10 +166,13 @@ public final class CompatPlan {
             put(out, Feature.CHUNK_IO, State.YIELDED, "dashloader",
                     "DashLoader кэширует загрузку мира целиком — read-ahead Hyperion уступает");
         } else {
-            String note = in.has("lithium")
+            List<String> notes = new ArrayList<>();
+            notes.add(in.has("lithium")
                     ? "работает поверх Lithium (Lithium не трогает RegionFile)"
-                    : "асинхронный read-ahead NBT";
-            put(out, Feature.CHUNK_IO, State.ACTIVE, "", note);
+                    : "асинхронный read-ahead NBT");
+            if (in.has("noisium")) notes.add("Noisium оптимизирует генерацию, а не чтение с диска");
+            if (in.has("starlight")) notes.add("Starlight переписал свет, формат региона не тронут");
+            put(out, Feature.CHUNK_IO, State.ACTIVE, "", String.join("; ", notes));
         }
 
         // ------------------------------------------------------------------ ИИ
@@ -153,10 +190,13 @@ public final class CompatPlan {
                         Action.DEFER_TO_SERVERCORE);
             }
         } else {
-            String note = in.has("lithium")
+            List<String> notes = new ArrayList<>();
+            notes.add(in.has("lithium")
                     ? "работает поверх Lithium (оптимизации GoalSelector сохранены)"
-                    : "троттлинг ИИ далёких мобов";
-            put(out, Feature.ENTITY_AI, State.ACTIVE, "", note);
+                    : "троттлинг ИИ далёких мобов");
+            if (in.has("vmp")) notes.add("VMP работает со списками игроков и чанков, ИИ не трогает");
+            if (in.has("threadtweak")) notes.add("ThreadTweak меняет приоритеты потоков — пулы Hyperion это учитывают");
+            put(out, Feature.ENTITY_AI, State.ACTIVE, "", String.join("; ", notes));
         }
 
         // -------------------------------------------------------------- culling
@@ -165,6 +205,9 @@ public final class CompatPlan {
         } else if (in.has("vulkanmod")) {
             put(out, Feature.ENTITY_CULLING, State.YIELDED, "vulkanmod",
                     "VulkanMod меняет графический бэкенд — culling Hyperion уступает");
+        } else if (in.has("optifabric")) {
+            put(out, Feature.ENTITY_CULLING, State.YIELDED, "optifabric",
+                    "OptiFine переписывает рендер сущностей и шейдеры — culling Hyperion уступает");
         } else if (in.mode == Mode.YIELD && (in.has("entityculling") || (in.has("sodium") && in.sodiumEntityCullingActive))) {
             String owner = in.has("entityculling") ? "entityculling" : "sodium";
             put(out, Feature.ENTITY_CULLING, State.YIELDED, owner,
@@ -191,11 +234,35 @@ public final class CompatPlan {
                     notes.add("Sodium entity-culling работает первым, Hyperion только дожимает");
                 }
             }
+            State state = State.ACTIVE;
             if (in.has("iris")) {
-                notes.add("Iris: culling уважает шейдеры и shadow pass");
+                IrisCulling shaders = in.shaderCulling();
+                if (shaders != IrisCulling.FORCE) {
+                    actions.add(Action.RESPECT_IRIS_SHADOW_PASS);
+                }
+                if (in.irisShadersInUse && shaders == IrisCulling.OFF) {
+                    state = State.PAUSED;
+                    owner = "iris";
+                    notes.add("шейдеры Iris активны, irisCulling=OFF — culling на паузе");
+                } else {
+                    notes.add(switch (shaders) {
+                        case OFF -> "Iris: culling выключится, пока активен шейдерпак";
+                        case SHADOW_SAFE -> "Iris: culling уважает шейдеры и shadow pass";
+                        case FORCE -> "Iris: culling принудительно (возможны артефакты теней)";
+                    });
+                }
+            }
+            if (in.has("moreculling")) {
+                notes.add("MoreCulling отсекает блок-сущности и предметы — области работы не пересекаются");
+            }
+            if (in.has("nvidium")) {
+                notes.add("Nvidium ускоряет рендер чанков, рендер сущностей не трогает");
+            }
+            if (in.hasLodTerrain()) {
+                notes.add("Distant Horizons/Bobby: за ванильной дальностью прорисовки culling не применяется");
             }
             if (notes.isEmpty()) notes.add("асинхронный occlusion-culling сущностей");
-            put(out, Feature.ENTITY_CULLING, State.ACTIVE, owner, String.join("; ", notes), actions);
+            put(out, Feature.ENTITY_CULLING, state, owner, String.join("; ", notes), actions);
         }
 
         // --------------------------------------------------------------- память
@@ -210,7 +277,10 @@ public final class CompatPlan {
         if (!in.blockPosPool) {
             put(out, Feature.BLOCKPOS, State.OFF, "", "выключено в конфиге hyperion.json");
         } else {
-            put(out, Feature.BLOCKPOS, State.ACTIVE, "", "пул курсоров BlockPos");
+            String note = in.has("lithium")
+                    ? "пул курсоров BlockPos (Lithium пулит не курсоры, а коллекции сущностей)"
+                    : "пул курсоров BlockPos";
+            put(out, Feature.BLOCKPOS, State.ACTIVE, "", note);
         }
 
         // -------------------------------------------------------------- отчёт
@@ -245,6 +315,7 @@ public final class CompatPlan {
             case BYPASS_SODIUM_ENTITY_CULLING -> "SodiumWorldRenderer.isEntityVisible -> решение Hyperion";
             case DISABLE_ENTITYCULLING_MOD -> "EntityCulling.CullTask.disableEntityCulling = true";
             case DEFER_TO_SERVERCORE -> "ServerCore activation range учитывается (без двойного троттлинга)";
+            case RESPECT_IRIS_SHADOW_PASS -> "Iris shadow pass: сущности рисуются всегда (тени не пропадают)";
         };
     }
 

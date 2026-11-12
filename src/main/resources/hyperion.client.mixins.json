@@ -7,6 +7,7 @@
   "plugin": "dev.hyperion.core.HyperionMixinPlugin",
   "client": [
     "ClientWorldMixin",
+    "DebugHudMixin",
     "EntityRenderDispatcherMixin",
     "InGameHudMixin",
     "MinecraftClientMixin"

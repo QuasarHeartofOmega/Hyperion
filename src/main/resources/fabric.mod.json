@@ -23,6 +23,10 @@
     {
       "config": "hyperion.client.mixins.json",
       "environment": "client"
+    },
+    {
+      "config": "hyperion.compat.mixins.json",
+      "environment": "client"
     }
   ],
   "depends": {
@@ -32,7 +36,9 @@
   },
   "suggests": {
     "sodium": "*",
-    "lithium": "*"
+    "lithium": "*",
+    "iris": "*",
+    "entityculling": "*"
   },
   "custom": {
     "modmenu": {

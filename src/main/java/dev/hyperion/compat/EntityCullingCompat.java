@@ -32,6 +32,7 @@ public final class EntityCullingCompat {
     private static volatile boolean applied;
     private static volatile boolean previousValue;
     private static volatile int attempts;
+    private static volatile int reassertCounter;
 
     private EntityCullingCompat() {
     }
@@ -87,6 +88,26 @@ public final class EntityCullingCompat {
         return applied;
     }
 
+    /**
+     * Перепроверить флаг: мод может перечитать свой конфиг (например, после
+     * {@code /entityculling reload} или смены мира) и сбросить его обратно.
+     * Вызывается из клиентского тика, но не чаще раза в 5 секунд — это одно
+     * чтение поля, а не работа по сущностям.
+     */
+    public static void reassert() {
+        if (!applied || !present()) return;
+        if (++reassertCounter < 100) return;
+        reassertCounter = 0;
+        Object instance = CompatBridge.read(instanceField, null);
+        Object task = CompatBridge.read(cullTaskField, instance);
+        if (task == null) return;
+        if (!CompatBridge.readBoolean(disableEntityCullingField, task, true)) {
+            if (CompatBridge.write(disableEntityCullingField, task, Boolean.TRUE)) {
+                Hyperion.LOGGER.info("[Hyperion][compat] EntityCulling сбросил флаг — culling сущностей снова у Hyperion");
+            }
+        }
+    }
+
     /** Вернуть моду его настройку (выход из игры / отключение мода). */
     public static void restore() {
         if (!applied) return;
@@ -97,12 +118,18 @@ public final class EntityCullingCompat {
         }
         applied = false;
         requested = false;
+        attempts = 0;
+        reassertCounter = 0;
     }
 
     public static String describe() {
         if (!present()) return "EntityCulling не установлен";
-        return "EntityCulling: " + (applied
-                ? "culling сущностей выполняет Hyperion, блок-сущности — мод"
-                : "работает рядом (двойного отсечения нет: решения объединяются)");
+        if (applied) {
+            return "EntityCulling: culling сущностей выполняет Hyperion, блок-сущности — мод";
+        }
+        if (requested) {
+            return "EntityCulling: ждём инициализацию мода, чтобы забрать culling сущностей (попытка " + attempts + ")";
+        }
+        return "EntityCulling: работает рядом (двойного отсечения нет: решения объединяются)";
     }
 }

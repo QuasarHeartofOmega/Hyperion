@@ -25,7 +25,8 @@ import java.util.Set;
  *
  * <p>Как это сделано:
  * <ol>
- *   <li><b>Опрос сборки.</b> Читаем список модов у FabricLoader (id + версия).</li>
+ *   <li><b>Опрос сборки.</b> Читаем список модов у FabricLoader (id + версия),
+ *       вложенные jar'ы добираем классами-маркерами из {@link CompatMods}.</li>
  *   <li><b>Планирование.</b> {@link CompatPlan} решает по каждой подсистеме, кто
  *       её владеет: Hyperion, другой мод или оба. Логика чистая и покрыта тестами.</li>
  *   <li><b>Переопределение.</b> Там, где у чужого мода есть штатная точка влияния,
@@ -33,70 +34,50 @@ import java.util.Set;
  *       флаг {@code CullTask.disableEntityCulling} у EntityCulling, учёт
  *       {@code ActivationEntity.servercore$isInactive()} у ServerCore.</li>
  *   <li><b>Отказ от невозможного.</b> Где переопределение технически невозможно
- *       (C2ME переписал I/O, VulkanMod сменил бэкенд) — подсистема уступает,
- *       а не ломает чужой мод.</li>
+ *       (C2ME переписал I/O, VulkanMod сменил бэкенд, OptiFine переписал рендер
+ *       сущностей) — подсистема уступает, а не ломает чужой мод.</li>
  *   <li><b>Динамика.</b> Iris включает/выключает шейдеры на ходу — состояние
- *       подсистемы обновляется каждый кадр ({@link IrisCompat}).</li>
+ *       подсистемы обновляется каждый кадр ({@link #clientFrame()} и {@link IrisCompat}).</li>
  * </ol>
  *
- * <p>Все миксины в чужие классы включаются только если мод реально найден
- * (см. {@code HyperionMixinPlugin}), с {@code require = 0} и {@code @Pseudo}.
+ * <p>Две фазы принятия решений намеренно разделены: {@link CompatGate} работает на
+ * этапе миксинов и не грузит чужих классов, этот класс — в рантайме, где рефлексия
+ * уже безопасна. Все миксины в чужие классы включаются только если мод реально найден,
+ * с {@code require = 0} и {@code @Pseudo}.
  */
 public final class HyperionCompat {
 
-    /** Моды, о которых Hyperion знает что-то полезное (id -> человекочитаемое имя). */
-    private static final Map<String, String> KNOWN = new LinkedHashMap<>();
-
-    static {
-        KNOWN.put("sodium", "Sodium");
-        KNOWN.put("iris", "Iris");
-        KNOWN.put("lithium", "Lithium");
-        KNOWN.put("indium", "Indium");
-        KNOWN.put("entityculling", "EntityCulling");
-        KNOWN.put("moreculling", "MoreCulling");
-        KNOWN.put("c2me", "C2ME");
-        KNOWN.put("servercore", "ServerCore");
-        KNOWN.put("ferritecore", "FerriteCore");
-        KNOWN.put("modernfix", "ModernFix");
-        KNOWN.put("immediatelyfast", "ImmediatelyFast");
-        KNOWN.put("exordium", "Exordium");
-        KNOWN.put("vulkanmod", "VulkanMod");
-        KNOWN.put("nvidium", "Nvidium");
-        KNOWN.put("dashloader", "DashLoader");
-        KNOWN.put("krypton", "Krypton");
-        KNOWN.put("starlight", "Starlight");
-        KNOWN.put("vmp", "Very Many Players");
-        KNOWN.put("noisium", "Noisium");
-        KNOWN.put("alternate-current", "Alternate Current");
-        KNOWN.put("threadtweak", "ThreadTweak");
-        KNOWN.put("distanthorizons", "Distant Horizons");
-        KNOWN.put("bobby", "Bobby");
-        KNOWN.put("optifabric", "OptiFabric");
-        KNOWN.put("sodium-extra", "Sodium Extra");
-        KNOWN.put("reeses-sodium-options", "Reese's Sodium Options");
-    }
+    /** Псевдонимы подсистем — чтобы хуки читались коротко и не зависели от порядка enum'ов. */
+    public static final Feature FEATURE_CHUNK_IO = Feature.CHUNK_IO;
+    public static final Feature FEATURE_ENTITY_AI = Feature.ENTITY_AI;
+    public static final Feature FEATURE_CULLING = Feature.ENTITY_CULLING;
+    public static final Feature FEATURE_BLOCKSTATE = Feature.BLOCKSTATE;
+    public static final Feature FEATURE_BLOCKPOS = Feature.BLOCKPOS;
 
     private static final Set<String> PRESENT = new LinkedHashSet<>();
     private static final Map<String, String> VERSIONS = new LinkedHashMap<>();
     private static volatile CompatPlan.Result plan;
     private static volatile boolean scanned;
     private static volatile boolean client;
+    private static volatile boolean shaderStateLogged;
 
     private HyperionCompat() {
     }
 
     // ------------------------------------------------------------------ опрос
 
+    /** Список модов из метаданных FabricLoader. Безопасно на любой фазе. */
     public static void scan() {
         if (scanned) return;
         synchronized (HyperionCompat.class) {
             if (scanned) return;
+            PRESENT.addAll(CompatGate.presentMods());
             try {
                 FabricLoader loader = FabricLoader.getInstance();
                 for (ModContainer mod : loader.getAllMods()) {
                     String id = mod.getMetadata().getId();
                     VERSIONS.put(id, mod.getMetadata().getVersion().getFriendlyString());
-                    if (KNOWN.containsKey(id)) PRESENT.add(id);
+                    if (CompatMods.known(id)) PRESENT.add(id);
                 }
             } catch (Throwable t) {
                 // FabricLoader может быть недоступен в тестах/дедикейтеде без Fabric — не критично.
@@ -113,18 +94,20 @@ public final class HyperionCompat {
      * трансформации байткода способна устроить циклическую инициализацию.
      */
     private static void probeClasses() {
-        if (SodiumCompat.present()) PRESENT.add("sodium");
-        if (IrisCompat.present()) PRESENT.add("iris");
-        if (LithiumCompat.present()) PRESENT.add("lithium");
-        if (EntityCullingCompat.present()) PRESENT.add("entityculling");
-        if (ServerCoreCompat.present()) PRESENT.add("servercore");
+        for (CompatMods.Mod mod : CompatMods.all()) {
+            if (!PRESENT.contains(mod.id()) && mod.probeable() && CompatMods.probe(mod.id())) {
+                PRESENT.add(mod.id());
+            }
+        }
     }
 
-    /** Пересобрать план (после /hyperion reload или смены конфига). */
+    /** Пересобрать план (после /hyperion reload, смены конфига или смены шейдерпака). */
     public static synchronized void replan() {
         scan();
         probeClasses();
         HyperionConfig cfg = HyperionConfig.get();
+        HyperionStatus.configure(cfg.safeMode, cfg.safeModeErrorLimit);
+
         CompatPlan.Input in = new CompatPlan.Input();
         in.mods.addAll(PRESENT);
         in.mode = CompatPlan.Mode.parse(cfg.compatMode, CompatPlan.Mode.HYPERION);
@@ -135,6 +118,8 @@ public final class HyperionCompat {
         in.blockPosPool = cfg.blockPosPool;
         in.overrideSodiumEntityCulling = cfg.overrideSodiumEntityCulling;
         in.overrideEntityCullingMod = cfg.overrideEntityCullingMod;
+        in.irisCulling = cfg.irisCulling;
+        in.irisShadersInUse = client && IrisCompat.shadersInUse();
         in.sodiumEntityCullingActive = SodiumCompat.entityCullingActive();
         in.serverCoreActivationRange = ServerCoreCompat.activationRangeEnabled();
 
@@ -164,9 +149,33 @@ public final class HyperionCompat {
         return plan;
     }
 
-    /** Вызывается из клиентского тика: отложенные переопределения + динамика Iris. */
+    /**
+     * Вызывается из клиентского тика: отложенные переопределения чужих флагов.
+     * Мод EntityCulling инициализируется в своём порядке, поэтому попытка повторяется,
+     * пока флаг не выставлен (и потом периодически перепроверяется).
+     */
     public static void clientTick() {
         EntityCullingCompat.applyPending();
+        EntityCullingCompat.reassert();
+    }
+
+    /**
+     * Вызывается в начале каждого кадра (render thread): динамика Iris.
+     * Шейдерпак можно включить/выключить на ходу — состояние подсистемы обязано
+     * меняться вместе с ним без перезапуска, иначе получаем «мобы без теней»
+     * или мёртвый culling.
+     */
+    public static void clientFrame() {
+        if (!client) return;
+        boolean changed = IrisCompat.refresh();
+        if (changed) {
+            replan();
+            if (HyperionConfig.get().verboseLogging || !shaderStateLogged) {
+                shaderStateLogged = true;
+                Hyperion.LOGGER.info("[Hyperion][compat] {}", IrisCompat.describe());
+            }
+        }
+        IrisCompat.applyStatus();
     }
 
     public static void markClient() {
@@ -179,7 +188,7 @@ public final class HyperionCompat {
 
     // ------------------------------------------------------------------ запросы
 
-    /** Подсистема уступлена другому моду или выключена (миксины не применяются). */
+    /** Подсистема уступлена другому моду, на паузе или выключена. */
     public static boolean isDisabled(Feature feature) {
         CompatPlan.Result result = plan();
         CompatPlan.Decision decision = result.get(feature);
@@ -190,8 +199,18 @@ public final class HyperionCompat {
         return !isDisabled(feature);
     }
 
+    /** Решение ранней фазы (для миксинов и логов до инициализации мира). */
+    public static boolean earlyWorks(Feature feature) {
+        return CompatGate.allow(feature);
+    }
+
     public static boolean sodiumBypass() {
         return SodiumCompat.bypassEntityCulling();
+    }
+
+    /** Кто-то дорисовывает мир за ванильной дальностью: culling там консервативен. */
+    public static boolean hasLodTerrain() {
+        return has("distanthorizons") || has("bobby");
     }
 
     public static Set<String> presentMods() {
@@ -215,13 +234,14 @@ public final class HyperionCompat {
         scan();
         List<String> out = new ArrayList<>();
         for (String id : PRESENT) {
-            out.add(KNOWN.getOrDefault(id, id) + " " + version(id));
+            out.add(CompatMods.display(id) + " " + version(id));
         }
         out.addAll(plan().report);
         if (client) {
             out.add(SodiumCompat.describe());
             out.add(IrisCompat.describe());
             out.add(EntityCullingCompat.describe());
+            out.add(RenderModsCompat.describe());
         }
         out.add(LithiumCompat.describe());
         out.add(ServerCoreCompat.describe());
@@ -232,8 +252,9 @@ public final class HyperionCompat {
     public static String environmentLine() {
         scan();
         List<String> names = new ArrayList<>();
-        for (String id : new String[]{"sodium", "iris", "lithium", "entityculling", "c2me", "servercore"}) {
-            if (PRESENT.contains(id)) names.add(KNOWN.getOrDefault(id, id));
+        for (String id : new String[]{"sodium", "iris", "lithium", "entityculling", "c2me", "servercore",
+                "vulkanmod", "optifabric", "distanthorizons", "bobby"}) {
+            if (PRESENT.contains(id)) names.add(CompatMods.display(id));
         }
         return names.isEmpty() ? "чистая сборка" : String.join("+", names);
     }
@@ -250,6 +271,11 @@ public final class HyperionCompat {
             Hyperion.LOGGER.info("[Hyperion][compat] {}", SodiumCompat.describe());
             Hyperion.LOGGER.info("[Hyperion][compat] {}", LithiumCompat.describe());
             Hyperion.LOGGER.info("[Hyperion][compat] {}", ServerCoreCompat.describe());
+            if (client) {
+                Hyperion.LOGGER.info("[Hyperion][compat] {}", IrisCompat.describe());
+                Hyperion.LOGGER.info("[Hyperion][compat] {}", EntityCullingCompat.describe());
+                Hyperion.LOGGER.info("[Hyperion][compat] {}", RenderModsCompat.describe());
+            }
         }
         for (Feature feature : Feature.values()) {
             if (HyperionStatus.state(feature) == State.YIELDED) {
@@ -258,9 +284,10 @@ public final class HyperionCompat {
         }
     }
 
-    /** Восстановить чужие настройки при выходе. */
+    /** Восстановить чужие настройки при выходе (мод не должен менять сборку навсегда). */
     public static void shutdown() {
         EntityCullingCompat.restore();
         SodiumCompat.requestBypass(false);
+        ServerCoreCompat.requestDefer(false);
     }
 }

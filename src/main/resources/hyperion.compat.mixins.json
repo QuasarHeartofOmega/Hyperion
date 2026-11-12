@@ -1,0 +1,1 @@
+{"required": false, "minVersion": "0.8", "package": "dev.hyperion.mixin.compat", "compatibilityLevel": "JAVA_21", "refmap": "hyperion-refmap.json", "plugin": "dev.hyperion.core.HyperionMixinPlugin", "client": ["SodiumEntityVisibilityMixin", "SodiumLegacyEntityVisibilityMixin"], "injectors": {"defaultRequire": 0}}

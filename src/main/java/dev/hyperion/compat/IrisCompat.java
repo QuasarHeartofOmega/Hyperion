@@ -3,6 +3,8 @@ package dev.hyperion.compat;
 import dev.hyperion.core.Hyperion;
 import dev.hyperion.core.HyperionConfig;
 import dev.hyperion.core.HyperionStatus;
+import dev.hyperion.core.HyperionStatus.Feature;
+import dev.hyperion.core.HyperionStatus.State;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -24,8 +26,14 @@ import java.lang.reflect.Method;
  * которые попали в кадр, рисуются и отбрасывают тени. В основном проходе culling
  * работает как обычно (режим {@code SHADOW_SAFE}).
  *
+ * <p>Состояние «шейдеры включены» кэшируется раз в кадр ({@link #refresh()} из
+ * {@code HyperionCompat.clientFrame()}), потому что шейдерпак можно переключить
+ * на ходу, а дёргать рефлексию на каждую сущность незачем. Состояние shadow pass,
+ * наоборот, читается вживую: оно меняется внутри одного кадра.
+ *
  * <p>Все обращения — через рефлексию: без Iris в сборке класс просто «недоступен»,
- * никаких NoClassDefFoundError. Проверено на Iris 1.8.8+1.21.4.
+ * никаких NoClassDefFoundError. Проверено на Iris 1.8.x для 1.21.4
+ * ({@code net.irisshaders.iris.api.v0.IrisApi}, ревизия API 2).
  */
 public final class IrisCompat {
 
@@ -58,7 +66,10 @@ public final class IrisCompat {
     private static volatile Method isShaderPackInUse;
     private static volatile Method isRenderingShadowPass;
     private static volatile Method areShadowsRendered;
+    private static volatile Method getCurrentPackName;
+    private static volatile Field currentPackName;
     private static volatile boolean shadersInUse;
+    private static volatile ShaderCulling mode = ShaderCulling.SHADOW_SAFE;
     private static volatile long lastRefresh;
 
     private IrisCompat() {
@@ -91,6 +102,12 @@ public final class IrisCompat {
                     Class<?> shadowState = CompatBridge.find(SHADOW_STATE_CLASS);
                     areShadowsRendered = CompatBridge.method(shadowState, "areShadowsCurrentlyBeingRendered");
                 }
+                Class<?> iris = CompatBridge.find(IRIS_CLASS);
+                if (iris != null) {
+                    getCurrentPackName = CompatBridge.method(iris, "getCurrentPackName");
+                    if (getCurrentPackName == null) currentPackName = CompatBridge.field(iris, "currentPackName");
+                }
+                mode = ShaderCulling.parse(HyperionConfig.get().irisCulling, ShaderCulling.SHADOW_SAFE);
                 if (available) {
                     Hyperion.LOGGER.info("[Hyperion][compat] Iris API найден (shadow pass {})",
                             isRenderingShadowPass != null ? "определяется" : "определяется по ShadowRenderingState");
@@ -104,16 +121,23 @@ public final class IrisCompat {
     }
 
     /**
-     * Обновить кэш «шейдеры включены». Вызывается раз в кадр из render thread —
-     * поэтому в горячем пути culling не нужно дёргать рефлексию на каждую сущность.
+     * Обновить кэш «шейдеры включены» и режим culling. Вызывается раз в кадр из
+     * render thread. Возвращает true, если состояние изменилось — тогда планировщик
+     * совместимости пересобирает план (и индикатор сразу показывает паузу/работу).
      */
-    public static void refresh() {
+    public static boolean refresh() {
         if (!present()) {
+            boolean was = shadersInUse;
             shadersInUse = false;
-            return;
+            return was;
         }
         lastRefresh = System.currentTimeMillis();
-        shadersInUse = CompatBridge.invokeBoolean(isShaderPackInUse, api, false);
+        boolean now = CompatBridge.invokeBoolean(isShaderPackInUse, api, false);
+        ShaderCulling parsed = ShaderCulling.parse(HyperionConfig.get().irisCulling, ShaderCulling.SHADOW_SAFE);
+        boolean changed = now != shadersInUse || parsed != mode;
+        shadersInUse = now;
+        mode = parsed;
+        return changed;
     }
 
     public static boolean shadersInUse() {
@@ -131,11 +155,12 @@ public final class IrisCompat {
 
     /**
      * Главное правило совместимости с Iris: можно ли сейчас отсеять сущность.
-     * Вызывается из {@code EntityCulling} перед применением результата рейкаста.
+     * Вызывается из {@code EntityCulling} перед применением результата рейкаста
+     * и из миксина Sodium — поэтому только volatile-чтения, без рефлексии,
+     * кроме случая «шейдеры действительно включены».
      */
     public static boolean cullingAllowed() {
         if (!available || !shadersInUse) return true;
-        ShaderCulling mode = ShaderCulling.parse(HyperionConfig.get().irisCulling, ShaderCulling.SHADOW_SAFE);
         return switch (mode) {
             case OFF -> false;
             case FORCE -> true;
@@ -143,10 +168,14 @@ public final class IrisCompat {
         };
     }
 
+    /** Режим из конфига (кэш обновляется раз в кадр). */
+    public static ShaderCulling mode() {
+        return mode;
+    }
+
     /** Причина паузы для индикатора (пустая строка, если паузы нет). */
     public static String pauseReason() {
         if (!available || !shadersInUse) return "";
-        ShaderCulling mode = ShaderCulling.parse(HyperionConfig.get().irisCulling, ShaderCulling.SHADOW_SAFE);
         return switch (mode) {
             case OFF -> "шейдеры Iris: culling на паузе";
             case SHADOW_SAFE -> "шейдеры Iris: culling только в основном проходе";
@@ -157,9 +186,9 @@ public final class IrisCompat {
     /** Имя активного шейдерпака (для HUD/статуса), либо «—». */
     public static String packName() {
         if (!present() || !shadersInUse) return "—";
-        Class<?> iris = CompatBridge.find(IRIS_CLASS);
-        Field field = CompatBridge.field(iris, "currentPackName");
-        return CompatBridge.readString(field, null, "—");
+        String name = CompatBridge.invokeString(getCurrentPackName, null, null);
+        if (name == null) name = CompatBridge.readString(currentPackName, null, null);
+        return name == null || name.isEmpty() ? "—" : name;
     }
 
     public static String describe() {
@@ -168,20 +197,27 @@ public final class IrisCompat {
         sb.append(shadersInUse ? "шейдеры включены" : "шейдеры выключены");
         if (shadersInUse) {
             sb.append(" (").append(packName()).append(')');
-            sb.append(", режим culling=").append(HyperionConfig.get().irisCulling);
+            sb.append(", режим culling=").append(mode);
             sb.append(", shadow pass=").append(shadowPass() ? "да" : "нет");
         }
         return sb.toString();
     }
 
-    /** Отметить в статусе, что culling живёт в режиме шейдеров. */
+    /**
+     * Отметить в статусе, что culling живёт в режиме шейдеров — и снять паузу,
+     * когда шейдеры выключили. Паузу ставим только поверх ACTIVE/BOOT: уступленную
+     * или сломанную подсистему «оживлять» нельзя, это решает планировщик.
+     */
     public static void applyStatus() {
         if (!available) return;
-        if (!shadersInUse) return;
-        ShaderCulling mode = ShaderCulling.parse(HyperionConfig.get().irisCulling, ShaderCulling.SHADOW_SAFE);
-        if (mode == ShaderCulling.OFF) {
-            HyperionStatus.set(HyperionStatus.Feature.ENTITY_CULLING, HyperionStatus.State.PAUSED,
+        State current = HyperionStatus.state(Feature.ENTITY_CULLING);
+        if (current == State.YIELDED || current == State.OFF || current == State.ERROR) return;
+        if (shadersInUse && mode == ShaderCulling.OFF) {
+            HyperionStatus.set(Feature.ENTITY_CULLING, State.PAUSED,
                     "шейдеры Iris (" + packName() + ")", "iris");
+        } else if (current == State.PAUSED) {
+            HyperionStatus.set(Feature.ENTITY_CULLING, State.ACTIVE,
+                    shadersInUse ? "шейдеры Iris: shadow pass уважается" : "", "");
         }
     }
 
