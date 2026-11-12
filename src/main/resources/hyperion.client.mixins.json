@@ -1,0 +1,17 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.hyperion.mixin.client",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "hyperion-refmap.json",
+  "plugin": "dev.hyperion.core.HyperionMixinPlugin",
+  "client": [
+    "ClientWorldMixin",
+    "EntityRenderDispatcherMixin",
+    "InGameHudMixin",
+    "MinecraftClientMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,55 @@
+// Обычная сборка через Fabric Loom (нужно >= 2 ГБ RAM).
+// В песочнице с 1 ГБ RAM Gradle-демон падает по OOM, поэтому там используется
+// tools/build-offline.sh — тот же результат (jar в intermediary), но без Gradle.
+plugins {
+    id 'fabric-loom' version '1.10-SNAPSHOT'
+    id 'java'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    // Fabric API НЕ требуется: все хуки сделаны на миксинах.
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 21
+    it.options.encoding = 'UTF-8'
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand 'version': project.version
+    }
+}
+
+jar {
+    from('LICENSE') { rename { "${it}_${project.base.archivesName.get()}" } }
+}
+
+// Автономные тесты чистых Java-компонентов (без Minecraft на classpath).
+tasks.register('selfTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs Hyperion standalone self-tests (queues, caches, A*, region math).'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'dev.hyperion.selftest.SelfTest'
+}

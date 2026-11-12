@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.hyperion.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "hyperion-refmap.json",
+  "plugin": "dev.hyperion.core.HyperionMixinPlugin",
+  "mixins": [
+    "CommandManagerMixin",
+    "GoalSelectorMixin",
+    "MinecraftServerMixin",
+    "MobEntityMixin",
+    "RegionFileMixin",
+    "ServerWorldMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

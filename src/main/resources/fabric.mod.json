@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "hyperion",
+  "version": "${version}",
+  "name": "Hyperion",
+  "description": "Асинхронный оптимизатор Minecraft: lock-free пайплайн I/O чанков, региональный параллельный анализ сущностей с throttling ИИ, асинхронное occlusion-culling сущностей, плоские кэши blockstate и пулинг BlockPos.",
+  "authors": [
+    "Hyperion Team"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "dev.hyperion.core.Hyperion"
+    ],
+    "client": [
+      "dev.hyperion.core.HyperionClient"
+    ]
+  },
+  "mixins": [
+    "hyperion.mixins.json",
+    {
+      "config": "hyperion.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21"
+  },
+  "suggests": {
+    "sodium": "*",
+    "lithium": "*"
+  },
+  "custom": {
+    "modmenu": {
+      "badges": []
+    }
+  }
+}
