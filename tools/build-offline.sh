@@ -9,8 +9,10 @@
 #      Processor, который генерирует refmap named -> intermediary;
 #   2. автономные тесты чистых компонентов;
 #   3. упаковка jar с ресурсами;
-#   4. tiny-remapper: named -> intermediary (то, что грузит Fabric в рантайме);
-#   5. проверка, что все цели миксинов реально существуют в intermediary-jar.
+#   4. tiny-remapper: named -> intermediary (то, что грузит Fabric в рантайме),
+#      обязательно с classpath — иначе члены не ремапятся;
+#   5. проверка, что все цели миксинов реально существуют в intermediary-jar;
+#   6. проверка, что в jar не осталось named-ссылок на методы/поля Minecraft.
 #
 # Требования: JDK 21, python3, подготовленный toolchain (tools/prepare-toolchain.py).
 #
@@ -49,7 +51,7 @@ for j in "$LIB_DIR"/sponge-mixin-*.jar "$LIB_DIR"/fabric-mixin-compile-extension
 done
 AP="${AP#:}"
 
-echo "==> [1/5] javac (+ Mixin AP: refmap named -> intermediary)"
+echo "==> [1/6] javac (+ Mixin AP: refmap named -> intermediary)"
 find src/main/java -name '*.java' > "$BUILD/sources.txt"
 "$JAVAC" -J-Xmx512m --release 21 -encoding UTF-8 -nowarn \
   -cp "$CP" \
@@ -59,10 +61,10 @@ find src/main/java -name '*.java' > "$BUILD/sources.txt"
   -AinMapFileNamedIntermediary="$MC_DIR/mappings.tiny" \
   -d "$CLASSES" @"$BUILD/sources.txt"
 
-echo "==> [2/5] автономные тесты"
+echo "==> [2/6] автономные тесты"
 "$JAVA" -Xmx256m -Dstdout.encoding=UTF-8 -cp "$CLASSES:$CP" dev.hyperion.selftest.SelfTest
 
-echo "==> [3/5] упаковка (named / dev jar)"
+echo "==> [3/6] упаковка (named / dev jar)"
 RES="$BUILD/resources"
 rm -rf "$RES"; mkdir -p "$RES"
 cp -r src/main/resources/* "$RES/"
@@ -75,13 +77,24 @@ PY
 DEV_JAR="$BUILD/hyperion-$VERSION-dev-named.jar"
 "$JAR" --create --file "$DEV_JAR" -C "$CLASSES" . -C "$RES" .
 
-echo "==> [4/5] remap named -> intermediary"
+echo "==> [4/6] remap named -> intermediary"
 OUT_JAR="$LIBS_OUT/hyperion-$VERSION+mc$MC_VERSION.jar"
-"$JAVA" -Xmx256m -jar "$MC_DIR/tiny-remapper.jar" \
-  "$DEV_JAR" "$OUT_JAR" "$MC_DIR/mappings.tiny" named intermediary > /dev/null
+# ВАЖНО: classpath обязателен. Без него tiny-remapper ремапит только имена
+# классов, а методы/поля оставляет в named-именах (он не может разрешить
+# владельца члена по иерархии наследования) -> NoSuchFieldError в рантайме.
+# client-named.jar содержит и все серверные классы, поэтому server-named.jar
+# не нужен: с двумя jar'ами пик памяти выходит за 1 ГБ и процесс убивает OOM.
+REMAP_CP="$MC_DIR/client-named.jar"
+for j in "$LIB_DIR"/*.jar; do REMAP_CP="$REMAP_CP $j"; done
+"$JAVA" -Xmx700m -XX:+UseSerialGC -XX:MaxMetaspaceSize=110m -jar "$MC_DIR/tiny-remapper.jar" \
+  "$DEV_JAR" "$OUT_JAR" "$MC_DIR/mappings.tiny" named intermediary $REMAP_CP > /dev/null
 
-echo "==> [5/5] проверка целей миксинов"
+echo "==> [5/6] проверка целей миксинов"
 python3 tools/verify-refmap.py "$GENERATED/hyperion-refmap.json" \
+  "$MC_DIR/client-intermediary.jar" "$MC_DIR/server-intermediary.jar"
+
+echo "==> [6/6] проверка ремапа членов (нет ли named-имён в jar)"
+python3 tools/verify-remap.py "$OUT_JAR" \
   "$MC_DIR/client-intermediary.jar" "$MC_DIR/server-intermediary.jar"
 
 echo

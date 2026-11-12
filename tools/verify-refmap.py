@@ -45,22 +45,22 @@ def read_class_methods(data: bytes):
     pos += 6  # access_flags, this_class, super_class
     ifaces = struct.unpack_from(">H", data, pos)[0]
     pos += 2 + ifaces * 2
-    for _ in range(2):  # fields, then methods (нужны только методы)
+    for section in range(2):  # 0 = fields, 1 = methods (нужны только методы)
         count = struct.unpack_from(">H", data, pos)[0]
         pos += 2
         entries = set()
-        for _ in range(count):
+        for _member in range(count):
             pos += 2
             name_i, desc_i = struct.unpack_from(">HH", data, pos)
             pos += 4
             entries.add((utf8.get(name_i, ""), utf8.get(desc_i, "")))
             attrs = struct.unpack_from(">H", data, pos)[0]
             pos += 2
-            for _ in range(attrs):
+            for _attr in range(attrs):
                 pos += 2
                 size = struct.unpack_from(">I", data, pos)[0]
                 pos += 4 + size
-        if _ == 1:
+        if section == 1:
             return entries
     return set()
 
