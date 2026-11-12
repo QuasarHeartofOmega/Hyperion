@@ -31,9 +31,23 @@ public final class HyperionKeys {
 
     /** Вызывать из клиентского тика (render thread — GLFW требует главный поток). */
     public static void poll(MinecraftClient client) {
+        try {
+            pollUnsafe(client);
+        } catch (Throwable t) {
+            // Клавиша — удобство, а не подсистема: падать из-за неё нельзя.
+            Hyperion.LOGGER.debug("[Hyperion] опрос клавиши индикатора пропущен: {}", t.toString());
+        }
+    }
+
+    private static void pollUnsafe(MinecraftClient client) {
         HyperionConfig cfg = HyperionConfig.get();
         int key = cfg.indicatorToggleKey;
         if (key <= 0 || client == null) return;
+        // В открытом экране H может быть частью ввода (чат, книга, поиск) — не перехватываем.
+        if (client.currentScreen != null) {
+            wasDown = true;
+            return;
+        }
         long window;
         try {
             window = client.getWindow().getHandle();

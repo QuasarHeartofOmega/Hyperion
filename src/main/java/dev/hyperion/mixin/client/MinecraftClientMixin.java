@@ -1,6 +1,7 @@
 package dev.hyperion.mixin.client;
 
 import dev.hyperion.chunk.HyperionChunkSystem;
+import dev.hyperion.client.HyperionKeys;
 import dev.hyperion.compat.HyperionCompat;
 import dev.hyperion.core.HyperionConfig;
 import dev.hyperion.core.HyperionMetrics;
@@ -65,6 +66,10 @@ public abstract class MinecraftClientMixin {
         }
 
         HyperionCompat.clientTick();
+
+        // Горячая клавиша индикатора (H / Shift+H). Опрос GLFW раз в тик —
+        // Fabric API не нужен, реестр клавиш не трогаем.
+        HyperionKeys.poll(self);
 
         if (world != null && cfg.entityCulling && HyperionCompat.works(HyperionCompat.FEATURE_CULLING)) {
             OcclusionSnapshots.get().pump(world, cfg.occlusionSectionBudgetPerTick);

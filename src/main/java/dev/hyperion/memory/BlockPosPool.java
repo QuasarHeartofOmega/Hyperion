@@ -42,7 +42,17 @@ public final class BlockPosPool {
         return pos;
     }
 
+    /**
+     * Курсор в заданной позиции. Уважает {@code blockPosPool=false} в конфиге:
+     * тогда возвращается обычный новый Mutable (полезно для отладки гонок курсоров).
+     *
+     * <p>Горячий путь: снятие снапшота проходимости ({@code HyperionPathSystem})
+     * делает десятки тысяч обращений к миру за снапшот — все они идут через этот метод.
+     */
     public static BlockPos.Mutable at(int x, int y, int z) {
+        if (!HyperionConfig.get().blockPosPool) {
+            return new BlockPos.Mutable(x, y, z);
+        }
         return acquire().set(x, y, z);
     }
 

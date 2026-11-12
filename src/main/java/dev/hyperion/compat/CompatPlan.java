@@ -322,6 +322,12 @@ public final class CompatPlan {
     private static void put(Result out, Feature feature, State state, String owner, String note, Action... actions) {
         Set<Action> set = new LinkedHashSet<>();
         Collections.addAll(set, actions);
+        put(out, feature, state, owner, note, set);
+    }
+
+    /** Перегрузка для уже собранного набора действий (varargs не принимает Set). */
+    private static void put(Result out, Feature feature, State state, String owner, String note, Set<Action> actions) {
+        Set<Action> set = new LinkedHashSet<>(actions);
         out.decisions.put(feature, new Decision(feature, state, owner, note, set));
         out.actions.addAll(set);
     }

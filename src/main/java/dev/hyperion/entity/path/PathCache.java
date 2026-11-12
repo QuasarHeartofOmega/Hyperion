@@ -36,6 +36,11 @@ public final class PathCache {
         return entry.result;
     }
 
+    /** Выбросить запись: путь перестал проходить проверку по живому миру. */
+    public void remove(int sx, int sy, int sz, int tx, int ty, int tz) {
+        cache.remove(new Key(sx, sy, sz, tx, ty, tz));
+    }
+
     public void put(int sx, int sy, int sz, int tx, int ty, int tz, AsyncPathfinder.Result result) {
         if (cache.size() >= maxEntries) {
             evictExpiredOrSome();
