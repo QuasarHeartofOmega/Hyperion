@@ -91,6 +91,49 @@ public final class HyperionConfig {
     /** Строить бенчмарк A* по команде /hyperion bench. */
     public boolean benchmarks = true;
 
+    // ---------------------------------------------------------- индикатор
+    /** Главный выключатель индикатора работы (клавиша H по умолчанию). */
+    public boolean indicator = true;
+    /** Режим: OFF | MINIMAL | COMPACT | FULL. */
+    public String indicatorMode = "COMPACT";
+    /** Угол экрана: TOP_LEFT | TOP_RIGHT | BOTTOM_LEFT | BOTTOM_RIGHT. */
+    public String indicatorCorner = "TOP_LEFT";
+    /** Отступ от выбранного угла, px (в GUI-координатах). */
+    public int indicatorX = 4;
+    public int indicatorY = 4;
+    /** Пульс светодиода по реальной работе подсистем. */
+    public boolean indicatorPulse = true;
+    /** Прятать индикатор, когда открыт F3 (там есть своя строка Hyperion). */
+    public boolean indicatorHideWithDebug = true;
+    /** Показывать индикатор, когда открыт экран (инвентарь/меню). */
+    public boolean indicatorInScreens = false;
+    /** Строка Hyperion в F3. */
+    public boolean debugHudLine = true;
+    /** Код GLFW клавиши переключения (72 = H, -1 = выключить). Shift — смена режима. */
+    public int indicatorToggleKey = 72;
+    /** Сообщение в чат при входе в мир: что работает, что уступлено. */
+    public boolean startupMessage = true;
+
+    // ------------------------------------------------------ совместимость
+    /**
+     * Политика приоритета: HYPERION (забираем пересекающуюся работу себе),
+     * COOPERATE (работаем рядом, чужое не трогаем), YIELD (уступаем всё пересекающееся).
+     */
+    public String compatMode = "HYPERION";
+    /** Переопределять SodiumWorldRenderer.isEntityVisible (Sodium entity-culling). */
+    public boolean overrideSodiumEntityCulling = true;
+    /** Забирать culling сущностей у мода EntityCulling его штатным флагом. */
+    public boolean overrideEntityCullingMod = true;
+    /**
+     * Culling при активных шейдерах Iris: OFF (не отсекать), SHADOW_SAFE
+     * (отсекать только в основном проходе, никогда в shadow pass), FORCE (всегда).
+     */
+    public String irisCulling = "SHADOW_SAFE";
+    /** Предохранитель: подсистема отключается сама после серии ошибок. */
+    public boolean safeMode = true;
+    /** Сколько ошибок за 10 секунд до авто-отключения подсистемы. */
+    public int safeModeErrorLimit = 8;
+
     public static HyperionConfig get() {
         HyperionConfig local = instance;
         if (local == null) {
@@ -168,6 +211,31 @@ public final class HyperionConfig {
         occlusionResultTtlMs = clamp(occlusionResultTtlMs, 16, 2000);
         occlusionQueueCapacity = clamp(occlusionQueueCapacity, 128, 65536);
         blockPosPoolSize = clamp(blockPosPoolSize, 4, 256);
+
+        // Индикатор и совместимость: строковые перечисления не доверяем пользователю —
+        // неизвестное значение молча заменяется на безопасное по умолчанию.
+        indicatorMode = oneOf(indicatorMode, "COMPACT", "OFF", "MINIMAL", "COMPACT", "FULL");
+        indicatorCorner = oneOf(indicatorCorner, "TOP_LEFT", "TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT");
+        indicatorX = clamp(indicatorX, 0, 512);
+        indicatorY = clamp(indicatorY, 0, 512);
+        indicatorToggleKey = clamp(indicatorToggleKey, -1, 348);
+        compatMode = oneOf(compatMode, "HYPERION", "HYPERION", "COOPERATE", "YIELD");
+        irisCulling = oneOf(irisCulling, "SHADOW_SAFE", "OFF", "SHADOW_SAFE", "FORCE");
+        safeModeErrorLimit = clamp(safeModeErrorLimit, 1, 1000);
+        if (entityCullingMaxDistance < entityCullingMinDistance) {
+            entityCullingMaxDistance = entityCullingMinDistance + 16.0;
+        }
+    }
+
+    /** Нормализация строкового «перечисления» из конфига. */
+    private static String oneOf(String value, String fallback, String... allowed) {
+        if (value != null) {
+            String normalized = value.trim().toUpperCase().replace('-', '_').replace(' ', '_');
+            for (String candidate : allowed) {
+                if (candidate.equals(normalized)) return candidate;
+            }
+        }
+        return fallback;
     }
 
     private static int clamp(int v, int lo, int hi) {
